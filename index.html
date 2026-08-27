@@ -1,0 +1,1540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaving and returning to the map</title>
+
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css">
+
+<style>
+  :root {
+    --paper:      #f5f3ef;
+    --ink:        #14181c;
+    --ink-soft:   #5b6670;
+    --rule:       #dcd8d0;
+    --accent:     #b5462f;
+    --accent-alt: #2f6f7d;
+    --link:       var(--accent-alt);
+
+    --measure:    34em;
+    --gutter:     clamp(1.25rem, 4vw, 3rem);
+  }
+
+  .scene--map {
+    --paper:    #0d1216;
+    --ink:      #f2f1ee;
+    --ink-soft: #9aa4ac;
+    --rule:     #2b3339;
+    --link:     #7fb3d5;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 17px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  emph { font-weight: 600; }
+
+  /* ===================================================================
+     LAYER 0 — THE MAP
+     =================================================================== */
+
+  #map-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    transition: opacity 500ms ease;
+  }
+  #map-layer.is-dimmed { opacity: 0; }
+
+  #map { position: absolute; inset: 0; }
+
+  .maplibregl-ctrl-attrib { pointer-events: auto; font-size: 10px; }
+  .maplibregl-ctrl-bottom-right { z-index: 2; }
+
+  /* ===================================================================
+     LAYER 2 — MAP CONTROLS
+     Fixed and outside the scenes, so one instance persists across every
+     map frame. Sits above the scenes in z-order and re-enables pointer
+     events, which #map-layer deliberately switches off.
+     =================================================================== */
+
+  #controls {
+    position: fixed;
+    left: var(--gutter);
+    bottom: 2rem;
+    z-index: 3;
+    pointer-events: auto;
+    color: #f2f1ee;
+    font-size: 13px;
+    line-height: 1.4;
+    opacity: 1;
+    transition: opacity 350ms ease, transform 350ms ease;
+  }
+
+  /* Hidden — and removed from the tab order — while a solid scene covers
+     the map, so it can't be focused when there is nothing to control. */
+  #controls[hidden] {
+    display: block;          /* override the default, we animate instead */
+    opacity: 0;
+    transform: translateY(0.5rem);
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  /* The collapsed state: a single pill, roughly the height of one line. */
+  #controls-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.5rem 0.8rem;
+    background: rgba(13, 18, 22, 0.88);
+    backdrop-filter: blur(4px);
+    border: 1px solid #2b3339;
+    border-radius: 999px;
+    color: #f2f1ee;
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease;
+  }
+  #controls-toggle:hover { background: #1c242a; border-color: #3a444c; }
+  #controls-toggle:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 2px; }
+  #controls-toggle svg { flex: 0 0 auto; }
+
+  #controls-toggle .chev {
+    transition: transform 200ms ease;
+  }
+  #controls-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+
+  /* The panel sits above the pill and is anchored to its bottom-left, so
+     it grows upward and never pushes the trigger off screen. */
+  #controls-panel {
+    position: absolute;
+    bottom: calc(100% + 0.5rem);
+    left: 0;
+    width: 15rem;
+    padding: 0.9rem 1rem 1rem;
+    background: rgba(13, 18, 22, 0.92);
+    backdrop-filter: blur(4px);
+    border: 1px solid #2b3339;
+    border-radius: 3px;
+    transform-origin: bottom left;
+    transition: opacity 200ms ease, transform 200ms ease;
+  }
+
+  #controls-panel[hidden] {
+    display: block;
+    opacity: 0;
+    transform: translateY(0.4rem) scale(0.98);
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  #controls fieldset {
+    margin: 0 0 0.85rem;
+    padding: 0;
+    border: 0;
+  }
+  #controls fieldset:last-of-type { margin-bottom: 0; }
+
+  #controls legend {
+    padding: 0;
+    margin-bottom: 0.4rem;
+    font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #9aa4ac;
+  }
+
+  .ctrl-row { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+
+  .ctrl-row button {
+    flex: 1 1 auto;
+    padding: 0.35rem 0.5rem;
+    background: transparent;
+    border: 1px solid #3a444c;
+    border-radius: 2px;
+    color: #cdd4d9;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease;
+  }
+  .ctrl-row button:hover { background: #1c242a; }
+  .ctrl-row button:focus-visible { outline: 2px solid #7fb3d5; outline-offset: 1px; }
+  .ctrl-row button[aria-pressed="true"] {
+    background: #f2f1ee;
+    border-color: #f2f1ee;
+    color: #0d1216;
+  }
+
+  /* Swatch buttons for the palette choices: the colour is the label, so
+     each still carries a text label for screen readers and for anyone who
+     can't tell the swatches apart — which is the whole point here. */
+  .swatch {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    flex: 1 1 100%;
+    text-align: left;
+  }
+  .swatch i {
+    flex: 0 0 auto;
+    width: 2.6rem;
+    height: 0.7rem;
+    border-radius: 1px;
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+
+  #legend-bar {
+    height: 0.7rem;
+    border-radius: 1px;
+    border: 1px solid rgba(255,255,255,0.25);
+    margin-bottom: 0.3rem;
+  }
+  #legend-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #9aa4ac;
+  }
+
+  /* ===================================================================
+     LAYER 1 — SCENES
+     =================================================================== */
+
+  .scene {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    padding: 18vh var(--gutter);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .scene--map   { background: transparent; }
+  .scene--solid { background: var(--paper); }
+
+  .scene--solid + .scene--map,
+  .scene--map + .scene--solid { border-top: 1px solid var(--rule); }
+
+  .prose { max-width: var(--measure); }
+  .prose--wide { max-width: none; }
+
+  .scene--map { color: var(--ink); }
+
+  .scene--map .prose {
+    background: rgba(13, 18, 22, 0.86);
+    backdrop-filter: blur(3px);
+    padding: 1.6rem 1.75rem;
+    border-radius: 2px;
+  }
+
+  /* The control panel occupies the lower left, so prose on map scenes is
+     pushed clear of it rather than sitting underneath. */
+  .scene--map .prose { margin-left: auto; margin-right: 0; }
+
+  .eyebrow {
+    display: block;
+    margin-bottom: 0.85rem;
+    font: 500 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  h1, h2 {
+    margin: 0 0 0.7rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+  h1 { font-size: clamp(2rem, 5vw, 3.1rem); }
+  h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); }
+
+  p { margin: 0 0 1.1rem; }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--link);
+    text-underline-offset: 0.15em;
+  }
+  a:hover, a:focus-visible { color: var(--accent); }
+
+  .lede { font-size: 1.15rem; color: var(--ink-soft); }
+
+  figure { margin: 2.5rem 0 0; max-width: 46em; }
+  figure.figure--wide { max-width: none; }
+
+  /* Two-column layout: body text on the left, figure on the right. */
+  .prose-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 2.5rem;
+  }
+  .prose-row .prose-text { flex: 1 1 55%; min-width: 0; }
+  .prose-row .figure--side {
+    flex: 1 1 40%;
+    min-width: 0;
+    margin: 0;
+    max-width: none;
+  }
+  @media (max-width: 800px) {
+    .prose-row { flex-direction: column; }
+  }
+
+  /* Scroll-driven zoom: the frame clips an image that starts framed on a
+     focal rectangle (data-zoom-x0/x1/y0/y1, in % of the image) and pans/
+     zooms out to the full image as it crosses the viewport. --zoom-tx/ty/
+     sx/sy are written by the scroll handler below (see ZOOM FIGURES script). */
+  .figure--zoom .zoom-frame {
+    overflow: hidden;
+    border-radius: 2px;
+  }
+  .figure--zoom .zoom-img {
+    width: 100%;
+    height: auto;
+    display: block;
+    transform-origin: 0 0;
+    transform:
+      translate(var(--zoom-tx, 0px), var(--zoom-ty, 0px))
+      scale(var(--zoom-sx, 1), var(--zoom-sy, 1));
+    will-change: transform;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .figure--zoom .zoom-img { transform: none; }
+  }
+  figure.figure--wide img,
+  figure.figure--wide svg {
+    width: auto;
+    max-width: 100%;
+    max-height: 70vh;
+    margin: 0 auto;
+  }
+  figure svg, figure img { width: 100%; height: auto; display: block; }
+
+  figcaption {
+    margin-top: 0.9rem;
+    max-width: var(--measure);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--ink-soft);
+  }
+
+  /* A single unnumbered note per figure/text inset. Mark the referring
+     point in the text with <sup>&dagger;</sup>, and repeat the dagger at
+     the start of the note itself so the two are matched by eye rather
+     than by a link. Works as the last child of .prose or of a <figure>
+     (after its figcaption, if any) — it only needs margin/border-top for
+     separation, so it doesn't care which container it's in. */
+  .footnote {
+    margin-top: 1.4rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--rule);
+    max-width: var(--measure);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--ink-soft);
+  }
+
+  .axis line, .axis path { stroke: var(--rule); }
+  .axis text { fill: var(--ink-soft); font-size: 11px; }
+  .bar-neg { fill: var(--accent); }
+  .bar-pos { fill: var(--accent-alt); }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    #map-layer, #controls, #controls-panel, #controls-toggle .chev { transition: none; }
+  }
+
+  /* ===================================================================
+     SCROLLY CHART SECTION
+     =================================================================== */
+
+  #scrolly {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    padding: 0 var(--gutter);
+    min-height: auto;
+  }
+
+  #graphic {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    flex: 0 0 60%;
+    max-width: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+  }
+
+  #chart { width: 100%; }
+
+  #steps { flex: 0 0 40%; }
+
+  .step {
+    min-height: 100vh;
+    margin-bottom: 0;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  @media (max-width: 800px) {
+    #controls { width: calc(100% - 2 * var(--gutter)); bottom: 1rem; }
+    .scene--map .prose { margin-left: 0; }
+  }
+
+  /* ===================================================================
+     DOT PLOT SCROLLY SECTION
+     =================================================================== */
+
+  #dot-scrolly {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    padding: 0 var(--gutter);
+    min-height: auto;
+  }
+
+  #dot-graphic {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    flex: 0 0 60%;
+    max-width: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin: 0;
+  }
+
+  #dot-chart { width: 100%; }
+
+  .eez-key {
+    width: 100%;
+    max-width: 800px;
+    max-height: 22vh;
+    overflow-y: auto;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--rule);
+  }
+
+  .eez-key-title {
+    margin: 0 0 0.4rem;
+    font-size: 11px;
+    color: var(--ink-soft);
+  }
+
+  .eez-key-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 0.2rem 0.8rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 11px;
+    color: var(--ink-soft);
+  }
+
+  .eez-key-list strong {
+    color: var(--ink);
+    font-weight: 600;
+    margin-right: 0.35rem;
+  }
+
+  #dot-steps { flex: 0 0 40%; }
+
+  .dot-step {
+    min-height: 100vh;
+    margin-bottom: 0;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .axis-label { fill: var(--ink-soft); font-size: 12px; }
+
+  .dot {
+    fill: var(--accent-alt);
+    stroke: var(--paper);
+    stroke-width: 1;
+    opacity: 0.85;
+  }
+
+  .dot-label {
+    fill: var(--ink-soft);
+    font-size: 11px;
+    text-anchor: middle;
+  }
+</style>
+</head>
+
+<body>
+
+<!-- Layer 0 -->
+<div id="map-layer"><div id="map"></div></div>
+
+<!-- Layer 2: persistent map controls -->
+<div id="controls" hidden>
+
+  <button type="button" id="controls-toggle"
+          aria-expanded="false" aria-controls="controls-panel">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/>
+    </svg>
+    <span>Visual Options</span>
+    <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+         stroke-linejoin="round" aria-hidden="true">
+      <path d="M6 15l6-6 6 6"/>
+    </svg>
+  </button>
+
+  <div id="controls-panel" role="group" aria-label="Colour scheme and basemap" hidden>
+
+  <fieldset>
+    <legend>Colour scheme</legend>
+    <div class="ctrl-row" id="palette-row"><!-- built by JS --></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Basemap</legend>
+    <div class="ctrl-row">
+      <button type="button" data-basemap="imagery" aria-pressed="true">Satellite</button>
+      <button type="button" data-basemap="topo" aria-pressed="false">Topographic</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Key</legend>
+    <div id="legend-bar"></div>
+    <div id="legend-ends"><span id="legend-lo"></span><span id="legend-hi"></span></div>
+  </fieldset>
+
+  </div><!-- /#controls-panel -->
+</div><!-- /#controls -->
+
+<!-- 🗺️ ARCHIPELAGO ON MAP -->
+
+<section class="scene scene--map" data-scene="pan_out" data-points="off">
+  <div class="prose">
+    <h2>A vast archipelago</h2>
+    <p>From space, the Pacific Islands are mere pin-pricks. They look extremely
+      vulnerable to rising sea-levels</p>
+    <p class="footnote">Nick Riches. <a href="https://pacificdatavizchallenge.org">PacificDataViz</a> competition entry, 2026.</p>
+  </div>
+</section>
+
+<!-- SEA-LEVEL GRAPH -->
+
+<section id="scrolly" class="scene scene--solid">
+  <figure id="graphic">
+    <div id="chart">
+    <figcaption>Mean sea-level rise for <a href="https://stats.pacificdata.org/vis?lc=en&df%5Bds%5D=SPC2&df%5Bid%5D=DF_CLIMATE_CHANGE&df%5Bag%5D=SPC&df%5Bvs%5D=1.0&av=true&dq=A.SEA_LVL.&pd=,&to%5BTIME_PERIOD%5D=false">Pacific Region</a></figcaption>
+    </div>
+  </figure>
+  <div id="steps">
+    <div class="step"><h2>Sea-levels are rising...</h2></div>
+    <div class="step"><h2>... at a rate of about 5cm per decade</h2></div>
+  </div>
+</section>
+
+<!-- BACK TO THE GRAPH -->
+
+<section class="scene scene--map" data-scene="fiji_overview" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 2</span> -->
+    <h2>Let's explore the coastline of Fiji</h2>
+    <p>The largest chain of islands bar Papua New Guinea</p>
+    <p>Red points show shoreline loss. Blue points show shoreline gain <sup>&dagger;</sup></p>
+    <p><emph>To change the colour scheme click Visual Options (bottom left)</emph></p>
+    <p class="footnote">&dagger; See <a href="https://www.ga.gov.au/scientific-topics/dea/dea-data-and-products/dea-coastlines">this Australian government website</a> for details of the coastline measuring methodology. Data is provided by the <a href="https://pacificdata.org/data/dataset/dep_ls_coastlines">Pacific data hub</a></p>
+  </div>
+</section>
+
+<section class="scene scene--map" data-scene="fiji_overview_closer" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 2</span> -->
+    <h2>At a glance...</h2>
+    <p>Land loss is not uniform. In some places the land is growing.</p>
+  </div>
+</section>
+
+<section class="scene scene--map" data-scene="fiji_east_coast" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 2</span> -->
+    <h2>For example...</h2>
+    <p>We see erosion on north facing shores and accretion on south facing shores. This may be due to ocean currents</p>
+  </div>
+</section>
+
+
+<section class="scene scene--map" data-scene="fiji_midway_to_narikoso" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 4</span> -->
+    <h2>So is coastal erosion getting worse?</h2>
+    <p>Let's look at a village called Narikoso</p>
+  </div>
+</section>
+
+
+
+<section class="scene scene--map" data-scene="narikoso" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 4</span> -->
+    <h2>Narikso</h2>
+    <p>Coastal erosion has led to evacuation plans. Some families have already been relocated further inland.</p>
+    <p>One of 40 identified by Fijian government as at risk.</p>
+    <p><a href="https://earthjournalism.net/stories/lessons-in-climate-driven-relocation-the-narikoso-case">Local news</a> depicted this as a consequence of sea-level rises</p>
+  </div>
+</section>
+
+<section class="scene scene--map" data-scene="fiji_midway_to_highways" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 4</span> -->
+    <h2>Highways</h2>
+    <p>Coastal highways have also been eroded</p>
+  </div>
+</section>
+
+
+
+<section class="scene scene--map" data-scene="detail" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <!-- <span class="eyebrow">Scene 4</span> -->
+    <h2>Erosion of Kings Road</h2>
+    <p>Sections of the highway have experienced severe erosion</p>
+    <p>Again, <a href="https://www.usp.ac.fj/wansolwaranews/news/fijis-vanishing-shores-villagers-battle-against-coastal-erosion/">local news</a> has depicted this as a consequence of sea-level rises</p>
+  </div>
+</section>
+
+
+
+<!-- 
+<section class="scene scene--map" data-scene="fiji_east_coast" data-points="on" data-basemap="imagery">
+  <div class="prose">
+    <span class="eyebrow">Scene 2</span>
+    <h2>So what's going on?</h2>
+  </div>
+</section> -->
+
+
+<!-- BACK TO SOLID -->
+
+
+<!-- <section class="scene scene--solid" data-scene="distribution">
+  <div class="prose prose--wide">
+    <span class="eyebrow">Scene 3</span>
+    <h2>So which islands will be worst affected?</h2>
+    <p>This chart shows island nations where settlements are most at risk (top right).</p>
+    <p>It should be acknowledged that none of these island nations are losing landmass.</p>
+    <p>But in the likely event of large sea-level rises, could they lose this stability?</p>
+  </div>
+
+  <figure class="figure">
+    <img src="erosion_risk.svg" alt="Erosion risk distribution">
+    <figcaption>Erosion risk for each South Pacific island</figcaption>
+  </figure>
+
+The danger area is in the top right.
+
+
+</section> -->
+
+
+<!-- SCROLLY: POPULATION vs COASTAL CHANGE -->
+
+<section id="dot-scrolly" class="scene scene--solid">
+  <figure id="dot-graphic">
+    <div id="dot-chart"></div>
+    <div class="eez-key">
+      <p class="eez-key-title">Territory codes</p>
+      <ul id="eez-key-list" class="eez-key-list"><!-- built by JS --></ul>
+    </div>
+  </figure>
+  <div id="dot-steps">
+    <div class="dot-step">
+      <h2>So which islands will be worst affected?</h2>
+      <p>Each point is a Pacific nation.</p>
+      <p>Size shows population<sup>&dagger;</sup>.</p>
+      <p>The horizontal axis shows the percentage of the population living within 1km of the coast<sup>&dagger;</sup>.</p>
+      <p>The vertical axis shows the percentage of reliable coastal observations which show erosion (negative values).</p>
+      <p>The danger zone is on the <emph>top right</emph>.</p>
+      <p>Kiribati, Cook Islands, and Nauru all look precarious.</p>
+      <p class="footnote">&dagger;<a href="https://pacificdata.org/data/dataset/population-densities-df-pop-density"> Data source</a> for population statistics.
+      <br>&dagger;<a href="https://pacificdata.org/story/coastal-proximity-populations-22-pacific-island-countries-and-territories"> Data source</a> for coastal proximity</p>
+    </div>
+    <div class="dot-step">
+      <h2>But let's change the horizontal axis</h2>
+      <p>This will now show the mean coastal loss / gain per satellite observation.</p>
+    </div>
+    <div class="dot-step">
+      <h2>A surprising finding</h2>
+      <p>Only Papua New Guinea has a negative value.</p>
+      <p>It is the only nation losing land mass.</p>
+      <p>And losses are very small.</p>
+    </div>
+    <div class="dot-step">
+      <h2>So what is going on?</h2>
+    </div>
+  </div>
+</section>
+
+
+
+<section class="scene scene--solid" data-scene="distribution">
+  <div class="prose prose--wide">
+    <!-- <span class="eyebrow">Scene 3</span> -->
+    <h2>The role of size</h2>
+    <div class="prose-row">
+      <div class="prose-text">
+        <p>A survey of atolls finds that those above ten hectares (approximately 14 football pitches) are "robust" to sea level rises (<a href="https://wires.onlinelibrary.wiley.com/doi/abs/10.1002/wcc.557">Duvat, 2019</a>).</p>
+        <p>While coastlines may change, causing localised damage and displacement of villages, the landmass of these islands is not getting smaller.</p>
+        <p>A survey of Central Pacific islands found that only 21.4% are contracting (<a href="https://www.nature.com/articles/s43247-024-01757-1">Kench et al. 2024</a>).</p>
+        <p>Large islands are stable due to natural factors, e.g. volcanic bedrock, which ensures that eroded material is redeposited rather than washed out to sea. Larger islands benefit from mangroves which may form a protective barrier.</p>
+        <p>Human activity may also be at play. On large islands, humans are more likely to dredge and build sea walls</p>
+      </div>
+      <figure class="figure figure--side">
+        <img src="kristin-hoel-i5kMNyhiw6c-unsplash.jpg" alt="A picture of a mangrove">
+        <figcaption><a href="https://unsplash.com/@hoelk">Kristin Hoel</a>, Unsplash</a></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+
+
+
+
+
+<section class="scene scene--solid" data-scene="distribution">
+  <div class="prose prose--wide">
+    <!-- <span class="eyebrow">Scene 3</span> -->
+    <h2>Let's take a historical view...</h2>
+    <div class="prose-row">
+      <div class="prose-text">
+        <p>Fiji's coastlines have been fluctuating for hundreds of years.</p>
+        <p>Oral histories find examples of villages which relocated due to coastal erosion in the 1950s (<a href="https://link.springer.com/article/10.1007/s10745-026-00685-2">Nunn et al. 2026</a>).</p>
+        <p>Furthermore, as mentioned, most islands in the Pacific are not shrinking.</p>
+      </div>
+      <figure class="figure figure--side">
+        <img src="nunn_et_al.png" alt="A picture of a mangrove">
+        <figcaption>Title page of Nunn et al. (2026)</a></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+
+<section class="scene scene--solid" data-scene="distribution">
+  <div class="prose prose--wide">
+    <!-- <span class="eyebrow">Scene 3</span> -->
+    <h2>So is there "nothing to see"?</h2>
+    <div class="prose-row">
+      <div class="prose-text">
+        <p>Individual cases of shoreline erosion cannot be easily linked to climate change.</p>
+        <p>The data show that large islands are robust to sea-level rises.</p>
+      </div>
+      <figure class="figure figure--side">
+        <img src="phillip-flores-ei-zTl9OUTY-unsplash.jpg" alt="A picture of a sandcastle">
+        <figcaption><a href="https://unsplash.com/@pflores">Phillip Flores</a>, Unsplash</a></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+
+
+<section class="scene scene--solid" data-scene="distribution">
+  <div class="prose prose--wide">
+    <!-- <span class="eyebrow">Scene 3</span> -->
+    <h2>A sting in the tail!</h2>
+    <div class="prose-row">
+      <div class="prose-text">
+        <p>Sea-level projections are alarming (<a href="https://www.pnas.org/doi/full/10.1073/pnas.1717312115">Nerem, 2018</a>)</p>
+        <p>We are reaching <emph>tipping points</emph> in <emph>multiple planetary systems</emph>.</p>
+        <p>Warming is accelerating at the <emph>poles</emph> due to loss of sea ice (the albedo effect). <emph>Tundras</emph> are melting and releasing more greenhouses gases. The <emph>oceans</emph> and large <emph>rainforests</emph> will cease to become carbon sinks.</p>
+        <p>Could this mean an end to the stability of large islands?</p>
+        <p>Will coastlines experience more frequent and more pronounced fluctations?</p>
+      </div>
+      <figure class="figure figure--side figure--zoom">
+        <div class="zoom-frame">
+          <img class="zoom-img" src="projected_sea_level_rises.svg" alt="Projected sea-level rises"
+               data-zoom-x0="0" data-zoom-x1="50" data-zoom-y0="70" data-zoom-y1="90"
+               data-zoom-start-fraction="0.9" data-zoom-end-fraction="0.1">
+        </div>
+        <figcaption>Projected sea-level rises</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+
+
+<section class="scene scene--solid">
+  <div class="prose">
+    <!-- <span class="eyebrow">End</span> -->
+    <h2>Vinaka!</h2>
+    <p><img src="https://www.google.com/s2/favicons?domain=pacificdatavizchallenge.org&sz=16" style="vertical-align: middle; margin-right: 6px;"<a href="https://pacificdatavizchallenge.org">The Pacific Dataviz Challenge</a></p>
+    <p><img src="https://www.google.com/s2/favicons?domain=github.com&sz=16" style="vertical-align: middle; margin-right: 6px;"<a href="https://github.com/russellsamora/scrollama">Scrollama</a> "scrollytelling" javascript library</p>
+    <p><img src="https://www.google.com/s2/favicons?domain=d3js.org&sz=16" style="vertical-align: middle; margin-right: 6px;"><a href="https://d3js.org">D3</a> plotting library</p>
+    <p><img src="https://www.google.com/s2/favicons?domain=maplibre.org&sz=16" style="vertical-align: middle; margin-right: 6px;"><a href="https://maplibre.org">Maplibre</a> maps library</p>
+    <p><img src="https://www.google.com/s2/favicons?domain=claude.ai&sz=16" style="vertical-align: middle; margin-right: 6px;"><emph>Claude code</emph> for help with processing and plotting coastal data, visualising map data, and creating transitions, charts and animations in scrollama</p>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/scrollama@3.2.0/build/scrollama.min.js"></script>
+
+<!-- ===================================================================
+     MAP
+     =================================================================== -->
+<script>
+(function () {
+  "use strict";
+
+  var ESRI_IMAGERY_ATTRIB =
+    'Powered by <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> ' +
+    '&mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community';
+
+  var ESRI_TOPO_ATTRIB =
+    'Powered by <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> ' +
+    '&mdash; Source: Esri, HERE, Garmin, USGS, NGA, and the GIS User Community';
+
+  /* ---------------------------------------------------------------
+     Both basemaps are added at init and cross-faded. setStyle() would
+     be the obvious alternative but it destroys every custom layer, so
+     the shoreline source and both circle layers would have to be
+     rebuilt on each switch.
+     --------------------------------------------------------------- */
+  var map = new maplibregl.Map({
+    container: "map",
+    style: {
+      version: 8,
+      sources: {
+        "esri-imagery": {
+          type: "raster",
+          tiles: ["https://services.arcgisonline.com/ArcGIS/rest/services/" +
+                  "World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+          tileSize: 256, maxzoom: 19, attribution: ESRI_IMAGERY_ATTRIB
+        },
+        "esri-topo": {
+          type: "raster",
+          tiles: ["https://services.arcgisonline.com/ArcGIS/rest/services/" +
+                  "World_Topo_Map/MapServer/tile/{z}/{y}/{x}"],
+          tileSize: 256, maxzoom: 19, attribution: ESRI_TOPO_ATTRIB
+        }
+      },
+      layers: [
+        { id: "bg", type: "background", paint: { "background-color": "#0d1216" } },
+        { id: "imagery", type: "raster", source: "esri-imagery",
+          paint: { "raster-opacity": 1, "raster-opacity-transition": { duration: 700 } } },
+        { id: "topo", type: "raster", source: "esri-topo",
+          paint: { "raster-opacity": 0, "raster-opacity-transition": { duration: 700 } } }
+      ]
+    },
+    center: [178.0, -17.8],
+    zoom: 6,
+    interactive: false,
+    attributionControl: false
+  });
+
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+  window.__map = map;
+
+  /* ---------------------------------------------------------------
+     PALETTES
+
+     `diverging` reads rate_time directly, so hue carries direction and
+     the midpoint is stable coast.
+
+     The `retreat` schemes fold accretion to zero — max(-rate, 0) — so
+     depth of shade means one thing only: how fast the coast is going.
+     Single-hue sequential ramps are the most robust option across every
+     form of colour vision deficiency, because lightness does the work
+     and lightness is preserved under all of them.
+     --------------------------------------------------------------- */
+
+  var RATE_MIN = -1.0;
+  var RATE_MAX =  1.0;
+
+  var RETREAT_INPUT = ["max", ["*", ["get", "rate_time"], -1], 0];
+
+  var PALETTES = {
+    diverging: {
+      label: "Retreat & growth",
+      mode: "diverging",
+      lo: "1 m/yr retreat", hi: "1 m/yr growth",
+      stops: [[RATE_MIN, "#b2182b"], [0, "#9aa0a3"], [RATE_MAX, "#2166ac"]]
+    },
+    amber: {
+      label: "Retreat — amber",
+      mode: "retreat",
+      lo: "stable", hi: "1 m/yr retreat",
+      stops: [[0, "#fdf3e3"], [0.5, "#d98f5a"], [1.0, "#7f2704"]]
+    },
+    purple: {
+      label: "Retreat — purple",
+      mode: "retreat",
+      lo: "stable", hi: "1 m/yr retreat",
+      stops: [[0, "#f2f0f7"], [0.5, "#9e9ac8"], [1.0, "#4a1486"]]
+    },
+    teal: {
+      label: "Retreat — teal",
+      mode: "retreat",
+      lo: "stable", hi: "1 m/yr retreat",
+      stops: [[0, "#edf8fb"], [0.5, "#66c2a4"], [1.0, "#00441b"]]
+    }
+  };
+
+  function paletteExpression(p) {
+    var expr = ["interpolate", ["linear"],
+                p.mode === "diverging" ? ["get", "rate_time"] : RETREAT_INPUT];
+    p.stops.forEach(function (s) { expr.push(s[0], s[1]); });
+    return expr;
+  }
+
+  function gradientCss(p) {
+    var span = p.stops[p.stops.length - 1][0] - p.stops[0][0];
+    var parts = p.stops.map(function (s) {
+      var pct = ((s[0] - p.stops[0][0]) / span) * 100;
+      return s[1] + " " + pct.toFixed(0) + "%";
+    });
+    return "linear-gradient(to right, " + parts.join(", ") + ")";
+  }
+
+  var currentPalette = "diverging";
+
+  function setPalette(name) {
+    var p = PALETTES[name];
+    if (!p) { return; }
+    currentPalette = name;
+
+    ["rates-weak", "rates-strong"].forEach(function (id) {
+      if (map.getLayer(id)) {
+        map.setPaintProperty(id, "circle-color", paletteExpression(p));
+      }
+    });
+
+    document.getElementById("legend-bar").style.background = gradientCss(p);
+    document.getElementById("legend-lo").textContent = p.lo;
+    document.getElementById("legend-hi").textContent = p.hi;
+
+    document.querySelectorAll("#palette-row button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.palette === name));
+    });
+  }
+
+  /* --- basemap ------------------------------------------------- */
+
+  var currentBasemap = "imagery";
+  var basemapLocked = false;   /* true once the reader chooses manually */
+
+  function applyBasemap(name) {
+    if (!map.getLayer("imagery")) { return; }
+    map.setPaintProperty("imagery", "raster-opacity", name === "imagery" ? 1 : 0);
+    map.setPaintProperty("topo", "raster-opacity", name === "topo" ? 1 : 0);
+    document.querySelectorAll("[data-basemap]").forEach(function (b) {
+      if (b.tagName === "BUTTON") {
+        b.setAttribute("aria-pressed", String(b.dataset.basemap === name));
+      }
+    });
+  }
+
+  function setBasemap(name, fromUser) {
+    if (!name) { return; }
+    if (fromUser) { basemapLocked = true; }
+    else if (basemapLocked) { return; }   /* don't fight a manual choice */
+    currentBasemap = name;
+    applyBasemap(name);
+  }
+
+  /* --- shoreline layers ---------------------------------------- */
+
+  var ready = false, pending = null, wantPoints = false;
+
+  map.on("load", function () {
+
+    map.addSource("shoreline-rates", {
+      type: "geojson",
+      data: "fiji_rates.geojson"
+    });
+
+    var SIG_THRESHOLD = 0.05;
+
+    var radiusByZoom = [
+      "interpolate", ["linear"], ["zoom"],
+      5, 1,
+      8, 2.5,
+      12, 4,
+      16, 8
+    ];
+
+    var colour = paletteExpression(PALETTES[currentPalette]);
+
+    map.addLayer({
+      id: "rates-weak",
+      type: "circle",
+      source: "shoreline-rates",
+      filter: [">", ["get", "sig_time"], SIG_THRESHOLD],
+      paint: {
+        "circle-radius": radiusByZoom,
+        "circle-color": colour,
+        "circle-color-transition": { duration: 400 },
+        "circle-opacity": [
+          "interpolate", ["linear"], ["zoom"],
+          5, 0.10,
+          10, 0.30
+        ]
+      }
+    });
+
+    map.addLayer({
+      id: "rates-strong",
+      type: "circle",
+      source: "shoreline-rates",
+      filter: ["<=", ["get", "sig_time"], SIG_THRESHOLD],
+      paint: {
+        "circle-radius": radiusByZoom,
+        "circle-color": colour,
+        "circle-color-transition": { duration: 400 },
+        "circle-opacity": [
+          "interpolate", ["linear"], ["zoom"],
+          5, 0.35,
+          10, 0.90
+        ],
+        "circle-stroke-color": "#1a1d20",
+        /* Stroke comes in earlier than before: over topographic tiles the
+           marks need the separation sooner than they do over dark water. */
+        "circle-stroke-width": [
+          "interpolate", ["linear"], ["zoom"],
+          7, 0,
+          10, 0.4,
+          16, 1
+        ],
+        "circle-stroke-opacity": [
+          "interpolate", ["linear"], ["zoom"],
+          7, 0,
+          10, 1
+        ]
+      }
+    });
+
+    ready = true;
+    applyPoints(wantPoints);
+    applyBasemap(currentBasemap);
+    if (pending) { move(pending, true); pending = null; }
+  });
+
+  function applyPoints(on) {
+    ["rates-weak", "rates-strong"].forEach(function (id) {
+      if (map.getLayer(id)) {
+        map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
+      }
+    });
+  }
+
+  function setPointsVisible(on) {
+    wantPoints = on;
+    if (ready) { applyPoints(on); }
+  }
+
+  /* --- camera --------------------------------------------------- */
+
+  var SCENES = {
+    pan_out:       { center: [-156.7983332, -16.3397973], zoom: 4 },
+    fiji_overview: { center: [ -177.5631, -17.8372], zoom: 6.5 },
+    fiji_overview_closer: { center: [ 179.9204, -17.7360], zoom: 7 },
+    fiji_east_coast: { center: [ 178.5845, -17.6495], zoom: 10 },
+    fiji_midway_to_narikoso: { center: [ 178.4857, -18.4283], zoom: 10 },
+    narikoso: { center: [ 178.5071, -18.9177], zoom: 15 },
+    fiji_midway_to_highways: { center: [ 178.3006, -18.2328], zoom: 10 },
+    detail:        { center: [178.0236, -18.2654], zoom: 14 }
+  };
+
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function move(key, now) {
+    var s = SCENES[key];
+    if (!s) { return; }
+    if (!ready) { pending = key; return; }
+    if (now || reduce) { map.jumpTo(s); }
+    else { map.easeTo({ center: s.center, zoom: s.zoom, duration: 1600, essential: true }); }
+  }
+
+  /* --- build the control panel ---------------------------------- */
+
+  var paletteRow = document.getElementById("palette-row");
+
+  Object.keys(PALETTES).forEach(function (key) {
+    var p = PALETTES[key];
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch";
+    b.dataset.palette = key;
+    b.setAttribute("aria-pressed", String(key === currentPalette));
+
+    var sw = document.createElement("i");
+    sw.style.background = gradientCss(p);
+    sw.setAttribute("aria-hidden", "true");
+
+    b.appendChild(sw);
+    b.appendChild(document.createTextNode(p.label));
+    b.addEventListener("click", function () { setPalette(key); });
+    paletteRow.appendChild(b);
+  });
+
+  document.querySelectorAll("#controls [data-basemap]").forEach(function (b) {
+    b.addEventListener("click", function () { setBasemap(b.dataset.basemap, true); });
+  });
+
+  setPalette(currentPalette);
+
+  /* --- open / close the panel ----------------------------------- */
+
+  var controls = document.getElementById("controls");
+  var toggle = document.getElementById("controls-toggle");
+  var panel = document.getElementById("controls-panel");
+
+  function setPanelOpen(open) {
+    panel.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+  }
+
+  toggle.addEventListener("click", function () {
+    setPanelOpen(toggle.getAttribute("aria-expanded") !== "true");
+  });
+
+  /* Esc closes and returns focus to the trigger, so keyboard users are
+     never stranded inside a panel they can't dismiss. */
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && toggle.getAttribute("aria-expanded") === "true") {
+      setPanelOpen(false);
+      toggle.focus();
+    }
+  });
+
+  /* Clicking anywhere outside closes it. */
+  document.addEventListener("click", function (e) {
+    if (!controls.contains(e.target)) { setPanelOpen(false); }
+  });
+
+  /* --- scroll wiring -------------------------------------------- */
+
+
+  scrollama()
+    .setup({ step: ".scene", offset: 0.55 })
+    .onStepEnter(function (r) {
+      var el = r.element;
+      var key = el.dataset.scene;
+      if (key) { move(key); }
+
+      setPointsVisible(el.dataset.points === "on");
+      setBasemap(el.dataset.basemap, false);
+
+      /* Show the panel only where there is a visible map to control. */
+      var onMap = el.classList.contains("scene--map");
+      controls.hidden = !onMap;
+      controls.setAttribute("aria-hidden", String(!onMap));
+      if (!onMap) { setPanelOpen(false); }   /* don't leave it open off-map */
+    });
+
+  window.addEventListener("resize", function () { map.resize(); });
+})();
+</script>
+
+<!-- ===================================================================
+     SEA-LEVEL CHART
+     =================================================================== -->
+<script>
+(async function () {
+  "use strict";
+
+  const raw = await d3.json('sealevel.json');
+  const data = raw
+    .map(d => ({ year: +d.TIME_PERIOD, mm: +d.mean }))
+    .filter(d => Number.isFinite(d.year) && Number.isFinite(d.mm));
+
+  const w = 800, h = 500;
+  const ml = 50, mr = 20, mt = 20, mb = 40;
+
+  const svg = d3.select('#chart').append('svg')
+    .attr('viewBox', [0, 0, w, h])
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+    .style('width', '100%')
+    .style('height', 'auto')
+    .style('max-width', `${w}px`)
+    .style('margin', '0 auto')
+    .style('display', 'block');
+
+  const x = d3.scaleLinear(d3.extent(data, d => d.year), [ml, w - mr]);
+  const y = d3.scaleLinear([-7, 15], [h - mb, mt]);
+
+  svg.append('g')
+    .attr('class', 'axis')
+    .attr('transform', `translate(0,${h - mb})`)
+    .call(d3.axisBottom(x).tickFormat(d3.format('d')));
+
+  svg.append('g')
+    .attr('class', 'axis')
+    .attr('transform', `translate(${ml},0)`)
+    .call(d3.axisLeft(y));
+
+  svg.append('line')
+    .attr('x1', ml).attr('x2', w - mr)
+    .attr('y1', y(0)).attr('y2', y(0))
+    .attr('stroke', 'var(--rule)')
+    .attr('stroke-dasharray', '3,3');
+
+  const clip = svg.append('clipPath').attr('id', 'reveal')
+    .append('rect').attr('y', 0).attr('height', h).attr('width', 0);
+
+  const g = svg.append('g').attr('clip-path', 'url(#reveal)');
+
+  g.append('path').datum(data)
+    .attr('fill', 'none')
+    .attr('stroke', '#14507a')
+    .attr('stroke-width', 1.5)
+    .attr('d', d3.line().x(d => x(d.year)).y(d => y(d.mm)));
+
+  const stepEls = document.querySelectorAll('.step');
+  const spans = Math.max(stepEls.length - 1, 1);
+
+  scrollama()
+    .setup({ step: '.step', progress: true, offset: 0.5 })
+    .onStepProgress(({ index, progress }) => {
+      const overall = Math.min((index + progress) / spans, 1);
+      clip.attr('width', (w - mr) * overall);
+    });
+})();
+</script>
+
+<!-- ===================================================================
+     DOT PLOT: POPULATION vs COASTAL CHANGE
+     x = perc_1km_coast throughout. y starts at perc_retreat and stays
+     there through the first two .dot-step captions, then morphs
+     continuously to rate_time as the third caption scrolls through, and
+     holds at rate_time for the fourth — axis and dots are driven off
+     the same blended scale, so they always agree mid-scroll, in either
+     scroll direction.
+     =================================================================== -->
+<script>
+(async function () {
+  "use strict";
+
+  const Y_LABELS = {
+    perc_retreat: 'Percentage of valid observations showing erosion',
+    rate_time: 'Mean coastal loss or gain in metres (positive values show gain)',
+  };
+
+  const data = (await d3.csv('dot_plot_popn.csv', d3.autoType))
+    .filter(d => Number.isFinite(d.perc_1km_coast) && Number.isFinite(d.perc_retreat) && Number.isFinite(d.rate_time) && Number.isFinite(d.popn));
+
+  d3.select('#eez-key-list')
+    .selectAll('li')
+    .data([...data].sort((a, b) => d3.ascending(a.eez_territory, b.eez_territory)))
+    .join('li')
+    .html(d => `<strong>${d.eez_territory}</strong>${d['country.y']}`);
+
+  const w = 800, h = 520;
+  const ml = 60, mr = 30, mt = 104, mb = 64;
+
+  const svg = d3.select('#dot-chart').append('svg')
+    .attr('viewBox', [0, 0, w, h])
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+    .style('width', '100%')
+    .style('height', 'auto')
+    .style('max-width', `${w}px`)
+    .style('margin', '0 auto')
+    .style('display', 'block');
+
+  svg.append('rect')
+    .attr('x', 0).attr('y', 0)
+    .attr('width', w).attr('height', h)
+    .attr('fill', '#ffffff');
+
+  const x = d3.scaleLinear([0, 100], [ml, w - mr]);
+  const r = d3.scaleSqrt([0, d3.max(data, d => d.popn)], [4, 24]);
+
+  svg.append('g')
+    .attr('class', 'axis')
+    .attr('transform', `translate(0,${h - mb})`)
+    .call(d3.axisBottom(x));
+
+  svg.append('text')
+    .attr('class', 'axis-label')
+    .attr('x', (ml + w - mr) / 2)
+    .attr('y', h - 20)
+    .attr('text-anchor', 'middle')
+    .text('Percentage of population within 1km of coast');
+
+  // The y-scale morphs between these two domains (both mapped onto the
+  // same pixel range), so axis ticks and dots can share one blended
+  // scale at any point in the scroll — see yScaleAt / render below.
+  const domStart = [0, 100];
+  const domEnd = d3.scaleLinear().domain(d3.extent(data, d => d.rate_time)).nice().domain();
+
+  function yScaleAt(p) {
+    return d3.scaleLinear(
+      [d3.interpolateNumber(domStart[0], domEnd[0])(p),
+       d3.interpolateNumber(domStart[1], domEnd[1])(p)],
+      [h - mb, mt]
+    );
+  }
+
+  function valueAt(d, p) {
+    return d.perc_retreat * (1 - p) + d.rate_time * p;
+  }
+
+  const yAxisG = svg.append('g')
+    .attr('class', 'axis')
+    .attr('transform', `translate(${ml},0)`);
+
+  const yLabel = svg.append('text')
+    .attr('class', 'axis-label')
+    .attr('x', ml)
+    .attr('y', mt - 14)
+    .attr('text-anchor', 'start')
+    .text(Y_LABELS.perc_retreat);
+
+  const dots = svg.append('g')
+    .selectAll('circle')
+    .data(data)
+    .join('circle')
+    .attr('class', 'dot')
+    .attr('r', d => r(d.popn))
+    .attr('cx', d => x(d.perc_1km_coast));
+
+  // One persistent node per label, so the force layout below can warm-
+  // start from its previous solved position instead of resettling from
+  // scratch on every scroll frame.
+  const labelNodes = data.map(d => ({ d, x: x(d.perc_1km_coast) }));
+
+  const dotLabels = svg.append('g')
+    .selectAll('text')
+    .data(labelNodes)
+    .join('text')
+    .attr('class', 'dot-label')
+    .text(n => n.d.eez_territory);
+
+  // Labels sit just above each dot (y pinned there) and are nudged apart
+  // horizontally so they declutter instead of overlapping — that keeps
+  // them clear of the chart's right edge, unlike a fixed offset to the
+  // right of the dot, which got truncated near the axis boundary. Re-run
+  // each render; with only 21 nodes and a warm-started x, this converges
+  // in well under a ms.
+  const labelSim = d3.forceSimulation(labelNodes).stop();
+
+  function layoutLabels(scale, p) {
+    labelNodes.forEach(n => {
+      n.targetX = x(n.d.perc_1km_coast);
+      n.fy = scale(valueAt(n.d, p)) - r(n.d.popn) - 4;
+    });
+    labelSim
+      .force('x', d3.forceX(n => n.targetX).strength(0.3))
+      .force('collide', d3.forceCollide(12).iterations(2))
+      .alpha(1);
+    for (let i = 0; i < 120; i++) labelSim.tick();
+
+    dotLabels.attr('x', n => n.x).attr('y', n => n.fy);
+  }
+
+  // Population size legend: three reference bubbles on the same radius
+  // scale as the data, sitting on a shared baseline in a header band
+  // above the plot area (kept clear of it by the enlarged top margin).
+  const legendValues = [10000, 1000000, 10000000];
+  const legendBaseY = 56;
+  let legendCx = ml;
+
+  const legend = svg.append('g').attr('class', 'legend');
+
+  legend.append('text')
+    .attr('class', 'axis-label')
+    .attr('x', ml)
+    .attr('y', 14)
+    .attr('text-anchor', 'start')
+    .text('Population');
+
+  legendValues.forEach((v) => {
+    const radius = r(v);
+    legendCx += radius;
+    legend.append('circle')
+      .attr('class', 'dot')
+      .attr('cx', legendCx)
+      .attr('cy', legendBaseY - radius)
+      .attr('r', radius);
+    legend.append('text')
+      .attr('class', 'axis-label')
+      .attr('x', legendCx)
+      .attr('y', legendBaseY + 14)
+      .attr('text-anchor', 'middle')
+      .text(d3.format('~s')(v));
+    legendCx += radius + 16;
+  });
+
+  function render(p) {
+    const scale = yScaleAt(p);
+    yAxisG.call(d3.axisLeft(scale));
+    dots.attr('cy', d => scale(valueAt(d, p)));
+    layoutLabels(scale, p);
+
+    const label = p < 0.5 ? Y_LABELS.perc_retreat : Y_LABELS.rate_time;
+    if (yLabel.text() !== label) yLabel.text(label);
+    yLabel.style('opacity', Math.min(Math.abs(p - 0.5) * 2.5, 1));
+  }
+
+  render(0);
+
+  // Stays at 0 (perc_retreat) through the first two captions; ramps
+  // 0 -> 1 as the third scrolls through (doubled and clamped so it's
+  // fully complete by the time the caption's own centre — not just its
+  // bottom edge — crosses the trigger line at offset 0.5, i.e. screen
+  // centre); then holds at 1 (rate_time) for the fourth caption.
+  scrollama()
+    .setup({ step: '.dot-step', progress: true, offset: 0.5 })
+    .onStepProgress(({ index, progress }) => {
+      if (index < 2) { render(0); return; }
+      if (index === 2) { render(Math.min(progress * 2, 1)); return; }
+      render(1);
+    });
+})();
+</script>
+
+<!-- ===================================================================
+     ZOOM FIGURES
+     Any <img class="zoom-img" data-zoom-x0="…" data-zoom-x1="…"
+     data-zoom-y0="…" data-zoom-y1="…"> (all in % of the image, 0-100)
+     starts framed on that rectangle and pans/zooms out to the full image
+     as it crosses the viewport. Progress is 0 when the frame's top edge
+     is at ZOOM_START_FRACTION of the viewport height (down from the top)
+     and 1 once it reaches ZOOM_END_FRACTION — those two constants are
+     the defaults, overridable per image via data-zoom-start-fraction /
+     data-zoom-end-fraction (e.g. 0.5 / 0.3 for a later, snappier reveal
+     confined to one section). Scrubs both ways with scroll, no pinning.
+     =================================================================== -->
+<script>
+(function () {
+  "use strict";
+
+  const ZOOM_START_FRACTION = 1.0;   // progress 0: frame top at this fraction of viewport height
+  const ZOOM_END_FRACTION = 0.35;    // progress 1: frame top at this fraction of viewport height
+
+  const imgs = Array.from(document.querySelectorAll('.zoom-img[data-zoom-x0]'));
+  if (!imgs.length) return;
+
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const items = imgs.map((img) => ({
+    img,
+    frame: img.closest('.zoom-frame') || img.parentElement,
+    x0: parseFloat(img.dataset.zoomX0) / 100 || 0,
+    x1: parseFloat(img.dataset.zoomX1) / 100 || 1,
+    y0: parseFloat(img.dataset.zoomY0) / 100 || 0,
+    y1: parseFloat(img.dataset.zoomY1) / 100 || 1,
+    startFraction: img.dataset.zoomStartFraction !== undefined
+      ? parseFloat(img.dataset.zoomStartFraction) : ZOOM_START_FRACTION,
+    endFraction: img.dataset.zoomEndFraction !== undefined
+      ? parseFloat(img.dataset.zoomEndFraction) : ZOOM_END_FRACTION,
+    w: 0,
+    h: 0,
+  }));
+
+  if (reduce) {
+    items.forEach(({ img }) => {
+      img.style.setProperty('--zoom-sx', 1);
+      img.style.setProperty('--zoom-sy', 1);
+      img.style.setProperty('--zoom-tx', '0px');
+      img.style.setProperty('--zoom-ty', '0px');
+    });
+    return;
+  }
+
+  function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+  // The frame's box is set by the img's normal (untransformed) layout size,
+  // so it's stable across scroll and only needs remeasuring on resize/load.
+  function measure() {
+    for (const item of items) {
+      const r = item.frame.getBoundingClientRect();
+      item.w = r.width;
+      item.h = r.height;
+    }
+  }
+
+  let ticking = false;
+
+  function update() {
+    ticking = false;
+    const vh = window.innerHeight;
+
+    for (const item of items) {
+      const { img, frame, x0, x1, y0, y1, w, h, startFraction, endFraction } = item;
+      const startY = vh * startFraction;
+      const endY = vh * endFraction;
+      const top = frame.getBoundingClientRect().top;
+      const progress = clamp01((startY - top) / (startY - endY));
+
+      // Interpolate the visible window from the focal rect toward the
+      // full image (0,0)-(1,1) as progress goes 0 -> 1.
+      const vx0 = x0 * (1 - progress);
+      const vx1 = x1 + (1 - x1) * progress;
+      const vy0 = y0 * (1 - progress);
+      const vy1 = y1 + (1 - y1) * progress;
+
+      const sx = 1 / (vx1 - vx0);
+      const sy = 1 / (vy1 - vy0);
+      const tx = -vx0 * sx * w;
+      const ty = -vy0 * sy * h;
+
+      img.style.setProperty('--zoom-sx', sx);
+      img.style.setProperty('--zoom-sy', sy);
+      img.style.setProperty('--zoom-tx', tx + 'px');
+      img.style.setProperty('--zoom-ty', ty + 'px');
+    }
+  }
+
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(update);
+  }
+
+  function onResize() {
+    measure();
+    onScroll();
+  }
+
+  items.forEach(({ img }) => img.addEventListener('load', onResize));
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onResize);
+  onResize();
+})();
+</script>
+
+</body>
+</html>
