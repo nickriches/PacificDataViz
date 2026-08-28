@@ -1,6 +1,6 @@
 # Nick Riches, Pacific DataViz Challenge Entry, 2026
 
-Please visit [https://nickriches.github.io/PacificDataViz/](to view the finished presentation)
+Please visit [https://nickriches.github.io/PacificDataViz/](https://nickriches.github.io/PacificDataViz/) to view the data presentation.
 
 Thanks to the following technologies for making this possible:
 
